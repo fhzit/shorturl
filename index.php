@@ -7,6 +7,7 @@ require __DIR__ . '/lib.php';
 $pdo = app_db();
 app_init($pdo);
 app_start_session();
+app_send_security_headers();
 
 $path = app_request_path();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -24,9 +25,33 @@ if ($path === '/admin/login' && $method === 'POST') {
         exit;
     }
 
-    if (app_login($pdo, (string) ($_POST['username'] ?? ''), (string) ($_POST['password'] ?? ''))) {
+    $username = (string) ($_POST['username'] ?? '');
+    $password = (string) ($_POST['password'] ?? '');
+    $ip = app_client_ip();
+
+    if (!app_turnstile_is_configured()) {
+        app_flash('验证码服务未配置，请联系管理员设置 Turnstile Key', 'err');
+        header('Location: ' . app_url('/admin'));
+        exit;
+    }
+
+    if (!app_verify_turnstile($_POST['cf-turnstile-response'] ?? null, $ip)) {
+        app_flash('请先完成验证码再登录', 'err');
+        header('Location: ' . app_url('/admin'));
+        exit;
+    }
+
+    if (app_login_is_blocked($pdo, $username, $ip)) {
+        app_flash('登录失败次数过多，请稍后再试', 'err');
+        header('Location: ' . app_url('/admin'));
+        exit;
+    }
+
+    if (app_login($pdo, $username, $password)) {
+        app_login_clear_failures($pdo, $username, $ip);
         app_flash('已登录');
     } else {
+        app_login_record_failure($pdo, $username, $ip);
         app_flash('账号或密码错误', 'err');
     }
 
@@ -115,6 +140,7 @@ if ($path === '/admin/change-password' && $method === 'POST') {
 if ($path === '/admin') {
     $flash = app_flash();
     $csrf = app_csrf();
+    $turnstileSiteKey = app_turnstile_site_key();
 
     if (!app_is_admin()) {
         ?>
@@ -135,6 +161,12 @@ if ($path === '/admin') {
             <input type="hidden" name="csrf" value="<?= app_h($csrf) ?>">
             <input name="username" type="text" placeholder="用户名" required>
             <input name="password" type="password" placeholder="密码" required>
+            <?php if ($turnstileSiteKey !== ''): ?>
+                <div class="cf-turnstile" data-sitekey="<?= app_h($turnstileSiteKey) ?>"></div>
+                <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+            <?php else: ?>
+                <p class="msg err">验证码服务未配置，当前禁止登录。</p>
+            <?php endif; ?>
             <button type="submit">登录</button>
         </form>
     </section>
@@ -245,8 +277,8 @@ if ($path === '/admin') {
     exit;
 }
 
-if (preg_match('#^/([A-Za-z0-9_-]{3,32})$#', $path, $m)) {
-    app_redirect_by_code($pdo, $m[1]);
+if (preg_match('#^/(.+)$#', $path, $m)) {
+    app_redirect_by_code($pdo, rawurldecode($m[1]));
 }
 
 http_response_code(404);

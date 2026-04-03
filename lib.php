@@ -2,10 +2,76 @@
 
 declare(strict_types=1);
 
+function app_load_env(string $filePath, bool $override = false): void
+{
+    static $loaded = [];
+
+    if (!$override && isset($loaded[$filePath])) {
+        return;
+    }
+
+    if (!is_file($filePath) || !is_readable($filePath)) {
+        $loaded[$filePath] = true;
+        return;
+    }
+
+    $lines = file($filePath, FILE_IGNORE_NEW_LINES);
+    if (!is_array($lines)) {
+        $loaded[$filePath] = true;
+        return;
+    }
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) {
+            continue;
+        }
+
+        if (str_starts_with($line, 'export ')) {
+            $line = trim(substr($line, 7));
+        }
+
+        $pos = strpos($line, '=');
+        if ($pos === false) {
+            continue;
+        }
+
+        $name = trim(substr($line, 0, $pos));
+        $value = trim(substr($line, $pos + 1));
+
+        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $name)) {
+            continue;
+        }
+
+        $length = strlen($value);
+        if ($length >= 2) {
+            $first = $value[0];
+            $last = $value[$length - 1];
+            if (($first === '"' && $last === '"') || ($first === "'" && $last === "'")) {
+                $value = substr($value, 1, -1);
+                if ($first === '"') {
+                    $value = str_replace(['\\n', '\\r', '\\t', '\\\\', '\\"'], ["\n", "\r", "\t", "\\", '"'], $value);
+                }
+            }
+        }
+
+        if (!$override && getenv($name) !== false) {
+            continue;
+        }
+
+        putenv($name . '=' . $value);
+        $_ENV[$name] = $value;
+        $_SERVER[$name] = $value;
+    }
+
+    $loaded[$filePath] = true;
+}
+
 function app_config(): array
 {
     static $config = null;
     if ($config === null) {
+        app_load_env(__DIR__ . '/.env');
         $config = require __DIR__ . '/config.php';
     }
 
@@ -50,6 +116,15 @@ function app_init(PDO $pdo): void
         created_at TEXT NOT NULL
     )');
 
+    $pdo->exec('CREATE TABLE IF NOT EXISTS login_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        ip_address TEXT NOT NULL,
+        attempted_at INTEGER NOT NULL
+    )');
+
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_login_attempts_user_ip_time ON login_attempts (username, ip_address, attempted_at)');
+
     $config = app_config();
     $find = $pdo->prepare('SELECT id FROM admin_users WHERE username = :username LIMIT 1');
     $find->execute([':username' => $config['admin_username']]);
@@ -67,8 +142,113 @@ function app_init(PDO $pdo): void
 function app_start_session(): void
 {
     if (session_status() !== PHP_SESSION_ACTIVE) {
+        $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+        $cookiePath = app_base_path();
+
+        ini_set('session.use_strict_mode', '1');
+        session_set_cookie_params([
+            'lifetime' => 0,
+            'path' => $cookiePath === '' ? '/' : $cookiePath,
+            'secure' => $secure,
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+
         session_start();
     }
+}
+
+function app_send_security_headers(): void
+{
+    header('X-Frame-Options: DENY');
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: no-referrer');
+    header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
+}
+
+function app_turnstile_site_key(): string
+{
+    return trim((string) (app_config()['turnstile_site_key'] ?? ''));
+}
+
+function app_turnstile_secret_key(): string
+{
+    return trim((string) (app_config()['turnstile_secret_key'] ?? ''));
+}
+
+function app_turnstile_is_configured(): bool
+{
+    return app_turnstile_site_key() !== '' && app_turnstile_secret_key() !== '';
+}
+
+function app_http_post_form(string $url, array $data, int $timeoutSeconds = 8): ?array
+{
+    $body = http_build_query($data);
+
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return null;
+        }
+
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $body,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_TIMEOUT => $timeoutSeconds,
+        ]);
+
+        $raw = curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if (!is_string($raw) || $code < 200 || $code >= 300) {
+            return null;
+        }
+
+        $decoded = json_decode($raw, true);
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
+            'content' => $body,
+            'timeout' => $timeoutSeconds,
+        ],
+    ]);
+
+    $raw = @file_get_contents($url, false, $context);
+    if (!is_string($raw)) {
+        return null;
+    }
+
+    $decoded = json_decode($raw, true);
+
+    return is_array($decoded) ? $decoded : null;
+}
+
+function app_verify_turnstile(?string $token, string $ip): bool
+{
+    if (!app_turnstile_is_configured()) {
+        return false;
+    }
+
+    $token = trim((string) $token);
+    if ($token === '') {
+        return false;
+    }
+
+    $response = app_http_post_form('https://challenges.cloudflare.com/turnstile/v0/siteverify', [
+        'secret' => app_turnstile_secret_key(),
+        'response' => $token,
+        'remoteip' => $ip,
+    ]);
+
+    return is_array($response) && !empty($response['success']);
 }
 
 function app_csrf(): string
@@ -133,6 +313,7 @@ function app_login(PDO $pdo, string $username, string $password): bool
     }
 
     app_start_session();
+    session_regenerate_id(true);
     $_SESSION['admin'] = true;
     $_SESSION['admin_id'] = (int) $user['id'];
 
@@ -228,12 +409,90 @@ function app_normalize_url(string $url): string
         $url = 'https://' . $url;
     }
 
+    if (preg_match('/[\x00-\x1F\x7F]/', $url)) {
+        return '';
+    }
+
+    $parts = parse_url($url);
+    if (!is_array($parts) || empty($parts['scheme'])) {
+        return '';
+    }
+
+    $scheme = strtolower((string) $parts['scheme']);
+    if (!in_array($scheme, ['http', 'https'], true)) {
+        return '';
+    }
+
     return filter_var($url, FILTER_VALIDATE_URL) ? $url : '';
+}
+
+function app_client_ip(): string
+{
+    $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
+
+    return substr($ip, 0, 64);
+}
+
+function app_login_rate_limit_max_attempts(): int
+{
+    return max(1, (int) (app_config()['login_max_attempts'] ?? 8));
+}
+
+function app_login_rate_limit_window_seconds(): int
+{
+    return max(60, (int) (app_config()['login_window_seconds'] ?? 900));
+}
+
+function app_login_cleanup_attempts(PDO $pdo): void
+{
+    $cutoff = time() - app_login_rate_limit_window_seconds();
+    $stmt = $pdo->prepare('DELETE FROM login_attempts WHERE attempted_at < :cutoff');
+    $stmt->execute([':cutoff' => $cutoff]);
+}
+
+function app_login_attempt_count(PDO $pdo, string $username, string $ip): int
+{
+    app_login_cleanup_attempts($pdo);
+
+    $cutoff = time() - app_login_rate_limit_window_seconds();
+    $stmt = $pdo->prepare('SELECT COUNT(*) FROM login_attempts WHERE username = :username AND ip_address = :ip_address AND attempted_at >= :cutoff');
+    $stmt->execute([
+        ':username' => trim($username),
+        ':ip_address' => $ip,
+        ':cutoff' => $cutoff,
+    ]);
+
+    return (int) $stmt->fetchColumn();
+}
+
+function app_login_is_blocked(PDO $pdo, string $username, string $ip): bool
+{
+    return app_login_attempt_count($pdo, $username, $ip) >= app_login_rate_limit_max_attempts();
+}
+
+function app_login_record_failure(PDO $pdo, string $username, string $ip): void
+{
+    $stmt = $pdo->prepare('INSERT INTO login_attempts (username, ip_address, attempted_at) VALUES (:username, :ip_address, :attempted_at)');
+    $stmt->execute([
+        ':username' => trim($username),
+        ':ip_address' => $ip,
+        ':attempted_at' => time(),
+    ]);
+}
+
+function app_login_clear_failures(PDO $pdo, string $username, string $ip): void
+{
+    $stmt = $pdo->prepare('DELETE FROM login_attempts WHERE username = :username AND ip_address = :ip_address');
+    $stmt->execute([
+        ':username' => trim($username),
+        ':ip_address' => $ip,
+    ]);
 }
 
 function app_validate_code(string $code): bool
 {
-    if (!preg_match('/^[A-Za-z0-9_-]{3,32}$/', $code)) {
+    $code = trim($code);
+    if ($code === '') {
         return false;
     }
 
@@ -279,7 +538,7 @@ function app_create_link(PDO $pdo, string $longUrl, string $customCode = ''): ar
     $customCode = trim($customCode);
     if ($customCode !== '') {
         if (!app_validate_code($customCode)) {
-            return ['ok' => false, 'message' => '短链码仅支持 3-32 位字母数字_- 且不能是保留字'];
+                return ['ok' => false, 'message' => '短链码不能为空，且不能与系统保留路径冲突'];
         }
 
         if (app_code_exists($pdo, $customCode)) {
@@ -309,12 +568,6 @@ function app_delete_link(PDO $pdo, string $code): void
 
 function app_redirect_by_code(PDO $pdo, string $code): void
 {
-    if (!app_validate_code($code)) {
-        http_response_code(404);
-        echo 'not found';
-        exit;
-    }
-
     $stmt = $pdo->prepare('SELECT long_url FROM links WHERE code = :code LIMIT 1');
     $stmt->execute([':code' => $code]);
     $row = $stmt->fetch();

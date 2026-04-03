@@ -37,6 +37,39 @@ export SHORTURL_ADMIN_PASSWORD='your-strong-password'
 php -S 127.0.0.1:8000 router.php
 ```
 
+也支持从 `.env` 文件自动加载环境变量（程序启动时读取项目根目录 `.env`）。
+
+```bash
+cp .env.example .env
+```
+
+然后按需修改 `.env` 中的配置项即可。
+
+可选安全参数：
+
+```bash
+export SHORTURL_LOGIN_MAX_ATTEMPTS=8
+export SHORTURL_LOGIN_WINDOW_SECONDS=900
+export SHORTURL_TURNSTILE_SITE_KEY='your-site-key'
+export SHORTURL_TURNSTILE_SECRET_KEY='your-secret-key'
+```
+
+- `SHORTURL_LOGIN_MAX_ATTEMPTS`：同一用户名 + IP 在时间窗口内允许的最大失败次数。
+- `SHORTURL_LOGIN_WINDOW_SECONDS`：失败次数统计窗口（秒）。
+- `SHORTURL_TURNSTILE_SITE_KEY`：Cloudflare Turnstile 站点公钥。
+- `SHORTURL_TURNSTILE_SECRET_KEY`：Cloudflare Turnstile 服务端密钥。
+
 ## 数据库存储
 
 SQLite 文件自动创建在 `data/shorturl.sqlite`。
+
+## 安全防护
+
+- SQL 查询统一使用 PDO 预处理语句（防 SQL 注入）。
+- 管理后台已启用 CSRF 校验。
+- 会话 Cookie 已启用 `HttpOnly`、`SameSite=Lax`，并在 HTTPS 下启用 `Secure`。
+- 登录成功后会重新生成会话 ID（防会话固定攻击）。
+- 新增登录失败限流（同一用户名 + IP）。
+- 后台登录强制 Cloudflare Turnstile 验证，验证码通过后才会校验账号密码。
+- 仅允许 `http/https` 目标链接，拒绝控制字符与非常见协议。
+- 默认发送基础安全响应头：`X-Frame-Options`、`X-Content-Type-Options`、`Referrer-Policy`、`Permissions-Policy`。
