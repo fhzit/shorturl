@@ -117,7 +117,7 @@ function app_is_admin(): bool
 function app_require_admin(): void
 {
     if (!app_is_admin()) {
-        header('Location: /admin');
+        header('Location: ' . app_url('/admin'));
         exit;
     }
 }
@@ -157,12 +157,59 @@ function app_h(string $value): string
     return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function app_base_path(): string
+{
+    $scriptName = (string) ($_SERVER['SCRIPT_NAME'] ?? '');
+    $basePath = str_replace('\\', '/', dirname($scriptName));
+
+    if ($basePath === '/' || $basePath === '.') {
+        return '';
+    }
+
+    return rtrim($basePath, '/');
+}
+
+function app_request_path(): string
+{
+    $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+    $basePath = app_base_path();
+
+    if ($basePath !== '') {
+        if ($path === $basePath) {
+            return '/';
+        }
+
+        $prefix = $basePath . '/';
+        if (str_starts_with($path, $prefix)) {
+            $trimmed = substr($path, strlen($basePath));
+            return $trimmed === '' ? '/' : $trimmed;
+        }
+    }
+
+    if ($path === '/index.php') {
+        return '/';
+    }
+
+    if (str_starts_with($path, '/index.php/')) {
+        return substr($path, strlen('/index.php')) ?: '/';
+    }
+
+    return $path;
+}
+
+function app_url(string $path = '/'): string
+{
+    $path = '/' . ltrim($path, '/');
+
+    return app_base_path() . ($path === '/' ? '' : $path);
+}
+
 function app_base_url(): string
 {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'] ?? '127.0.0.1:8000';
 
-    return $scheme . '://' . $host;
+    return $scheme . '://' . $host . app_base_path();
 }
 
 function app_short_url(string $code): string

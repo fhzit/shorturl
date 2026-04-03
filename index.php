@@ -8,7 +8,7 @@ $pdo = app_db();
 app_init($pdo);
 app_start_session();
 
-$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$path = app_request_path();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($path === '/health') {
@@ -20,7 +20,7 @@ if ($path === '/health') {
 if ($path === '/admin/login' && $method === 'POST') {
     if (!app_check_csrf($_POST['csrf'] ?? null)) {
         app_flash('CSRF 校验失败', 'err');
-        header('Location: /admin');
+        header('Location: ' . app_url('/admin'));
         exit;
     }
 
@@ -30,7 +30,7 @@ if ($path === '/admin/login' && $method === 'POST') {
         app_flash('账号或密码错误', 'err');
     }
 
-    header('Location: /admin');
+    header('Location: ' . app_url('/admin'));
     exit;
 }
 
@@ -39,7 +39,7 @@ if ($path === '/admin/logout' && $method === 'POST') {
         app_logout();
     }
 
-    header('Location: /admin');
+    header('Location: ' . app_url('/admin'));
     exit;
 }
 
@@ -48,7 +48,7 @@ if ($path === '/admin/create' && $method === 'POST') {
 
     if (!app_check_csrf($_POST['csrf'] ?? null)) {
         app_flash('CSRF 校验失败', 'err');
-        header('Location: /admin');
+        header('Location: ' . app_url('/admin'));
         exit;
     }
 
@@ -59,7 +59,7 @@ if ($path === '/admin/create' && $method === 'POST') {
         app_flash((string) $result['message'], 'err');
     }
 
-    header('Location: /admin');
+    header('Location: ' . app_url('/admin'));
     exit;
 }
 
@@ -68,7 +68,7 @@ if ($path === '/admin/delete' && $method === 'POST') {
 
     if (!app_check_csrf($_POST['csrf'] ?? null)) {
         app_flash('CSRF 校验失败', 'err');
-        header('Location: /admin');
+        header('Location: ' . app_url('/admin'));
         exit;
     }
 
@@ -78,7 +78,7 @@ if ($path === '/admin/delete' && $method === 'POST') {
         app_flash('已删除: ' . $code);
     }
 
-    header('Location: /admin');
+    header('Location: ' . app_url('/admin'));
     exit;
 }
 
@@ -87,7 +87,7 @@ if ($path === '/admin/change-password' && $method === 'POST') {
 
     if (!app_check_csrf($_POST['csrf'] ?? null)) {
         app_flash('CSRF 校验失败', 'err');
-        header('Location: /admin');
+        header('Location: ' . app_url('/admin'));
         exit;
     }
 
@@ -97,7 +97,7 @@ if ($path === '/admin/change-password' && $method === 'POST') {
 
     if ($newPassword !== $newPasswordConfirm) {
         app_flash('新密码两次输入不一致', 'err');
-        header('Location: /admin');
+        header('Location: ' . app_url('/admin'));
         exit;
     }
 
@@ -108,7 +108,7 @@ if ($path === '/admin/change-password' && $method === 'POST') {
         app_flash($result['message'], 'err');
     }
 
-    header('Location: /admin');
+    header('Location: ' . app_url('/admin'));
     exit;
 }
 
@@ -124,14 +124,14 @@ if ($path === '/admin') {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>管理后台</title>
-    <link rel="stylesheet" href="/assets/style.css">
+    <link rel="stylesheet" href="<?= app_h(app_url('/assets/style.css')) ?>">
 </head>
 <body class="login-page">
 <main class="wrap">
     <section class="card">
         <h1>短链后台</h1>
         <?php if ($flash): ?><p class="msg <?= app_h($flash['type']) ?>"><?= app_h($flash['message']) ?></p><?php endif; ?>
-        <form method="post" action="/admin/login" class="form">
+        <form method="post" action="<?= app_h(app_url('/admin/login')) ?>" class="form">
             <input type="hidden" name="csrf" value="<?= app_h($csrf) ?>">
             <input name="username" type="text" placeholder="用户名" required>
             <input name="password" type="password" placeholder="密码" required>
@@ -154,7 +154,7 @@ if ($path === '/admin') {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>管理后台</title>
-    <link rel="stylesheet" href="/assets/style.css">
+    <link rel="stylesheet" href="<?= app_h(app_url('/assets/style.css')) ?>">
 </head>
 <body>
 <main class="wrap">
@@ -163,7 +163,7 @@ if ($path === '/admin') {
             <h1>短链后台</h1>
             <div class="row" style="gap: 10px;">
                 <button type="button" class="btn-light" onclick="document.getElementById('pwd-modal').style.display='flex'">修改密码</button>
-                <form method="post" action="/admin/logout">
+                <form method="post" action="<?= app_h(app_url('/admin/logout')) ?>">
                     <input type="hidden" name="csrf" value="<?= app_h($csrf) ?>">
                     <button type="submit" class="btn-light">退出</button>
                 </form>
@@ -178,7 +178,7 @@ if ($path === '/admin') {
                     <h2>修改密码</h2>
                     <button type="button" class="modal-close" onclick="document.getElementById('pwd-modal').style.display='none'">✕</button>
                 </div>
-                <form method="post" action="/admin/change-password" class="form">
+                <form method="post" action="<?= app_h(app_url('/admin/change-password')) ?>" class="form">
                     <input type="hidden" name="csrf" value="<?= app_h($csrf) ?>">
                     <label>
                         旧密码
@@ -199,7 +199,7 @@ if ($path === '/admin') {
 
         <?php if ($flash): ?><p class="msg <?= app_h($flash['type']) ?>"><?= app_h($flash['message']) ?></p><?php endif; ?>
 
-        <form method="post" action="/admin/create" class="form">
+        <form method="post" action="<?= app_h(app_url('/admin/create')) ?>" class="form">
             <input type="hidden" name="csrf" value="<?= app_h($csrf) ?>">
             <input name="long_url" type="text" placeholder="长链接，例如 https://example.com/a" required>
             <input name="custom_code" type="text" placeholder="短链码(可选)">
@@ -223,7 +223,7 @@ if ($path === '/admin') {
                             <td class="url" data-label="目标地址"><?= app_h($item['long_url']) ?></td>
                             <td data-label="点击"><?= (int) $item['clicks'] ?></td>
                             <td data-label="操作">
-                                <form method="post" action="/admin/delete" onsubmit="return confirm('确认删除?');">
+                                <form method="post" action="<?= app_h(app_url('/admin/delete')) ?>" onsubmit="return confirm('确认删除?');">
                                     <input type="hidden" name="csrf" value="<?= app_h($csrf) ?>">
                                     <input type="hidden" name="code" value="<?= app_h($item['code']) ?>">
                                     <button type="submit" class="btn-danger">删</button>
@@ -257,7 +257,7 @@ http_response_code(404);
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>404 - 页面未找到</title>
-    <link rel="stylesheet" href="/assets/style.css">
+    <link rel="stylesheet" href="<?= app_h(app_url('/assets/style.css')) ?>">
     <style>
         body.not-found-page {
             min-height: 100vh;
